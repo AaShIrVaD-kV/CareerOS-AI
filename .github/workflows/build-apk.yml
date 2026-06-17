@@ -6,6 +6,9 @@ on:
   pull_request:
     branches: [ "main" ]
 
+permissions:
+  contents: write
+
 jobs:
   build:
     name: Build Android APK
@@ -34,3 +37,24 @@ jobs:
         with:
           name: careeros-ai-debug-apk
           path: app/build/outputs/apk/debug/app-debug.apk
+
+      - name: Create or Update GitHub Release
+        if: github.ref == 'refs/heads/main'
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: latest
+          name: "CareerOS AI - Latest Build"
+          body: |
+            ### Automated Development Build
+            This release contains the latest automated build compiled directly from the `main` branch.
+            
+            **Installation Instructions:**
+            1. Download the `app-debug.apk` file from the assets link below.
+            2. Open the file on your physical or emulated Android device.
+            3. Grant the required permissions if prompted (must allow installation of apps from unknown sources).
+            4. Enjoy using **CareerOS AI**!
+          draft: false
+          prerelease: true
+          files: app/build/outputs/apk/debug/app-debug.apk
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

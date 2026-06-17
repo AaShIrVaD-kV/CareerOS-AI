@@ -1,0 +1,6 @@
+{
+  "name": "CareerOS AI",
+  "description": "Your ultimate personal AI career coach, resume strategist, and ATS score tracker.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}

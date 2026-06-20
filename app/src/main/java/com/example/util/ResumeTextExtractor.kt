@@ -3,9 +3,9 @@ package com.example.util
 import android.content.Context
 import android.net.Uri
 import android.provider.OpenableColumns
-import com.tomroush.pdfbox.android.PDFBoxResourceLoader
-import com.tomroush.pdfbox.pdmodel.PDDocument
-import com.tomroush.pdfbox.text.PDFTextStripper
+import com.tom_roush.pdfbox.android.PDFBoxResourceLoader
+import com.tom_roush.pdfbox.pdmodel.PDDocument
+import com.tom_roush.pdfbox.text.PDFTextStripper
 import java.io.InputStream
 import java.util.zip.ZipInputStream
 
@@ -54,7 +54,7 @@ object ResumeTextExtractor {
         return try {
             PDDocument.load(inputStream).use { document ->
                 val stripper = PDFTextStripper()
-                stripper.text(document)
+                stripper.getText(document)
             }
         } catch (e: Exception) {
             e.printStackTrace()

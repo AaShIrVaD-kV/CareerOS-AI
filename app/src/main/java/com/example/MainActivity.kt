@@ -51,6 +51,7 @@ import com.example.data.database.ResumeEntity
 import com.example.data.database.ResumeJobAnalysisEntity
 import com.example.ui.theme.MyApplicationTheme
 import com.example.ui.viewmodel.CareerViewModel
+import com.example.util.ResumeTextExtractor
 import com.squareup.moshi.Moshi
 import com.squareup.moshi.kotlin.reflect.KotlinJsonAdapterFactory
 import androidx.compose.ui.graphics.drawscope.Stroke

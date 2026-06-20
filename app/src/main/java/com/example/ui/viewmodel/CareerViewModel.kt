@@ -12,7 +12,10 @@ import com.example.data.database.JobScanEntity
 import com.example.data.database.StudyTaskEntity
 import com.example.data.database.UserProfileEntity
 import com.example.data.database.JobApplicationEntity
+import com.example.data.database.ResumeEntity
+import com.example.data.database.ResumeJobAnalysisEntity
 import com.example.data.repository.CareerRepository
+import com.example.util.ResumeTextExtractor
 import com.squareup.moshi.Moshi
 import com.squareup.moshi.kotlin.reflect.KotlinJsonAdapterFactory
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -22,6 +25,8 @@ import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.withContext
+import android.content.Context
 
 class CareerViewModel(application: Application) : AndroidViewModel(application) {
 
@@ -32,6 +37,8 @@ class CareerViewModel(application: Application) : AndroidViewModel(application) 
     val allTasks: StateFlow<List<StudyTaskEntity>>
     val curatedJobs: StateFlow<List<CuratedJobEntity>>
     val allApplications: StateFlow<List<JobApplicationEntity>>
+    val allResumes: StateFlow<List<ResumeEntity>>
+    val allResumeAnalyses: StateFlow<List<ResumeJobAnalysisEntity>>
 
     private val _isScanning = MutableStateFlow(false)
     val isScanning: StateFlow<Boolean> = _isScanning.asStateFlow()
@@ -41,6 +48,24 @@ class CareerViewModel(application: Application) : AndroidViewModel(application) 
 
     private val _selectedScanResult = MutableStateFlow<JobScanEntity?>(null)
     val selectedScanResult: StateFlow<JobScanEntity?> = _selectedScanResult.asStateFlow()
+
+    private val _isAnalyzingResume = MutableStateFlow(false)
+    val isAnalyzingResume: StateFlow<Boolean> = _isAnalyzingResume.asStateFlow()
+
+    private val _analysisError = MutableStateFlow<String?>(null)
+    val analysisError: StateFlow<String?> = _analysisError.asStateFlow()
+
+    private val _activeAnalysisResult = MutableStateFlow<com.example.data.api.StructuredResumeAnalysis?>(null)
+    val activeAnalysisResult: StateFlow<com.example.data.api.StructuredResumeAnalysis?> = _activeAnalysisResult.asStateFlow()
+
+    private val _isRewritingResume = MutableStateFlow(false)
+    val isRewritingResume: StateFlow<Boolean> = _isRewritingResume.asStateFlow()
+
+    private val _rewriteError = MutableStateFlow<String?>(null)
+    val rewriteError: StateFlow<String?> = _rewriteError.asStateFlow()
+
+    private val _activeRewriteResult = MutableStateFlow<com.example.data.api.StructuredResumeRewrite?>(null)
+    val activeRewriteResult: StateFlow<com.example.data.api.StructuredResumeRewrite?> = _activeRewriteResult.asStateFlow()
 
     init {
         val database = AppDatabase.getDatabase(application)
@@ -71,6 +96,18 @@ class CareerViewModel(application: Application) : AndroidViewModel(application) 
         )
 
         allApplications = repository.allApplications.stateIn(
+            scope = viewModelScope,
+            started = SharingStarted.WhileSubscribed(5000),
+            initialValue = emptyList()
+        )
+
+        allResumes = repository.allResumes.stateIn(
+            scope = viewModelScope,
+            started = SharingStarted.WhileSubscribed(5000),
+            initialValue = emptyList()
+        )
+
+        allResumeAnalyses = repository.allResumeAnalyses.stateIn(
             scope = viewModelScope,
             started = SharingStarted.WhileSubscribed(5000),
             initialValue = emptyList()
@@ -707,6 +744,297 @@ class CareerViewModel(application: Application) : AndroidViewModel(application) 
                 _isChatLoading.value = false
             }
         }
+    }
+
+    fun parseResumeSections(text: String): Map<String, String> {
+        val sections = mutableMapOf(
+            "skills" to "",
+            "education" to "",
+            "experience" to "",
+            "certifications" to "",
+            "projects" to ""
+        )
+        val lines = text.lines()
+        var currentSection = "summary"
+        val sectionBuilders = mutableMapOf<String, StringBuilder>()
+        sections.keys.forEach { sectionBuilders[it] = StringBuilder() }
+        sectionBuilders["summary"] = StringBuilder()
+
+        for (line in lines) {
+            val trimmed = line.trim().lowercase()
+            when {
+                trimmed.contains("skills") || trimmed.contains("technical skills") || trimmed.contains("core competencies") -> currentSection = "skills"
+                trimmed.contains("education") || trimmed.contains("academic") -> currentSection = "education"
+                trimmed.contains("experience") || trimmed.contains("employment") || trimmed.contains("work history") || trimmed.contains("professional experience") -> currentSection = "experience"
+                trimmed.contains("certifications") || trimmed.contains("credentials") || trimmed.contains("licenses") -> currentSection = "certifications"
+                trimmed.contains("projects") || trimmed.contains("featured projects") || trimmed.contains("academic projects") -> currentSection = "projects"
+                else -> {
+                    sectionBuilders[currentSection]?.append(line)?.append("\n")
+                }
+            }
+        }
+        return mapOf(
+            "skills" to sectionBuilders["skills"].toString().trim(),
+            "education" to sectionBuilders["education"].toString().trim(),
+            "experience" to sectionBuilders["experience"].toString().trim(),
+            "certifications" to sectionBuilders["certifications"].toString().trim(),
+            "projects" to sectionBuilders["projects"].toString().trim()
+        )
+    }
+
+    fun uploadAndSaveResume(context: Context, uri: android.net.Uri, name: String) {
+        viewModelScope.launch {
+            _isAnalyzingResume.value = true
+            _analysisError.value = null
+            try {
+                val rawText = withContext(Dispatchers.IO) {
+                    ResumeTextExtractor.extractText(context, uri)
+                }
+                if (rawText.isBlank() || rawText.startsWith("Error extracting text")) {
+                    _analysisError.value = "Failed to extract text from resume: $rawText"
+                    return@launch
+                }
+                
+                val sections = parseResumeSections(rawText)
+                val maxVer = repository.getMaxResumeVersion()
+                val nextVer = maxVer + 1
+                
+                val resume = ResumeEntity(
+                    name = name,
+                    version = nextVer,
+                    rawText = rawText,
+                    skillsRaw = sections["skills"] ?: "",
+                    educationRaw = sections["education"] ?: "",
+                    experienceRaw = sections["experience"] ?: "",
+                    certificationsRaw = sections["certifications"] ?: "",
+                    projectsRaw = sections["projects"] ?: ""
+                )
+                repository.saveResume(resume)
+            } catch (e: Exception) {
+                _analysisError.value = "Failed to upload resume: ${e.localizedMessage}"
+            } finally {
+                _isAnalyzingResume.value = false
+            }
+        }
+    }
+
+    fun analyzeResumeMatch(
+        resumeId: Long,
+        jobTitle: String,
+        companyName: String,
+        jobUrl: String,
+        jobPostingContent: String,
+        jobDescriptionText: String
+    ) {
+        if (jobDescriptionText.isBlank()) {
+            _analysisError.value = "Job Description cannot be empty!"
+            return
+        }
+        viewModelScope.launch {
+            _isAnalyzingResume.value = true
+            _analysisError.value = null
+            try {
+                val resume = repository.getResumeById(resumeId)
+                if (resume == null) {
+                    _analysisError.value = "Resume not found!"
+                    return@launch
+                }
+                val result = repository.runResumeMatchAnalysis(
+                    resumeText = resume.rawText,
+                    jdText = jobDescriptionText,
+                    jobTitle = jobTitle,
+                    companyName = companyName,
+                    jobUrl = jobUrl,
+                    jobPostingContent = jobPostingContent
+                )
+                if (result != null) {
+                    _activeAnalysisResult.value = result
+                    // Save to local database
+                    val analysisEntity = ResumeJobAnalysisEntity(
+                        resumeId = resume.id,
+                        resumeVersion = resume.version,
+                        jobTitle = jobTitle.ifBlank { "Job Candidate" },
+                        companyName = companyName.ifBlank { "Unknown Company" },
+                        jobUrl = jobUrl,
+                        jobDescriptionText = jobDescriptionText,
+                        jobPostingContent = jobPostingContent,
+                        matchScore = result.matchScore,
+                        skillsMatchScore = result.skillsMatchScore,
+                        keywordMatchScore = result.keywordMatchScore,
+                        educationMatch = result.educationMatch,
+                        experienceMatch = result.experienceMatch,
+                        missingSkillsRaw = result.missingSkills.joinToString(", "),
+                        missingKeywordsRaw = result.missingKeywords.joinToString(", "),
+                        strengthsRaw = result.strengths.joinToString(", "),
+                        weaknessesRaw = result.weaknesses.joinToString(", "),
+                        interviewReadinessScore = result.interviewReadinessScore
+                    )
+                    repository.saveResumeAnalysis(analysisEntity)
+                } else {
+                    _analysisError.value = "Failed to run match analysis."
+                }
+            } catch (e: Exception) {
+                _analysisError.value = "Error: ${e.localizedMessage}"
+            } finally {
+                _isAnalyzingResume.value = false
+            }
+        }
+    }
+
+    fun rewriteResume(
+        resumeId: Long,
+        instructions: String,
+        jdText: String?
+    ) {
+        viewModelScope.launch {
+            _isRewritingResume.value = true
+            _rewriteError.value = null
+            try {
+                val resume = repository.getResumeById(resumeId)
+                if (resume == null) {
+                    _rewriteError.value = "Resume not found!"
+                    return@launch
+                }
+                val result = repository.runResumeRewrite(
+                    resumeText = resume.rawText,
+                    instructions = instructions,
+                    jdText = jdText
+                )
+                if (result != null) {
+                    _activeRewriteResult.value = result
+                } else {
+                    _rewriteError.value = "Failed to rewrite resume."
+                }
+            } catch (e: Exception) {
+                _rewriteError.value = "Error: ${e.localizedMessage}"
+            } finally {
+                _isRewritingResume.value = false
+            }
+        }
+    }
+
+    fun approveSectionRewrite(
+        resumeId: Long,
+        sectionName: String,
+        rewrittenText: String
+    ) {
+        viewModelScope.launch {
+            try {
+                val resume = repository.getResumeById(resumeId) ?: return@launch
+                
+                // Determine which section to update in our structured fields
+                val cleanSection = sectionName.lowercase()
+                var skills = resume.skillsRaw
+                var education = resume.educationRaw
+                var experience = resume.experienceRaw
+                var certifications = resume.certificationsRaw
+                var projects = resume.projectsRaw
+                
+                when {
+                    cleanSection.contains("skill") -> skills = rewrittenText
+                    cleanSection.contains("education") -> education = rewrittenText
+                    cleanSection.contains("experience") || cleanSection.contains("work") || cleanSection.contains("history") || cleanSection.contains("employment") -> experience = rewrittenText
+                    cleanSection.contains("certification") || cleanSection.contains("credential") -> certifications = rewrittenText
+                    cleanSection.contains("project") -> projects = rewrittenText
+                    else -> experience = rewrittenText // fallback to experience
+                }
+                
+                // Re-compile raw text from sections
+                val newRawText = """
+                    ${resume.name.substringBeforeLast(".")} - Updated Version
+                    
+                    EXPERIENCE
+                    $experience
+                    
+                    SKILLS
+                    $skills
+                    
+                    PROJECTS
+                    $projects
+                    
+                    EDUCATION
+                    $education
+                    
+                    CERTIFICATIONS
+                    $certifications
+                """.trimIndent()
+                
+                val maxVer = repository.getMaxResumeVersion()
+                val nextVer = maxVer + 1
+                
+                val updatedResume = ResumeEntity(
+                    name = "${resume.name.substringBeforeLast(".")}_v$nextVer.txt",
+                    version = nextVer,
+                    rawText = newRawText,
+                    skillsRaw = skills,
+                    educationRaw = education,
+                    experienceRaw = experience,
+                    certificationsRaw = certifications,
+                    projectsRaw = projects
+                )
+                
+                repository.saveResume(updatedResume)
+                
+                // Remove the approved section from active rewrite result list so it doesn't show as pending
+                val currentRewrite = _activeRewriteResult.value
+                if (currentRewrite != null) {
+                    val updatedSections = currentRewrite.sectionBySectionRewrite.filter { it.sectionName != sectionName }
+                    _activeRewriteResult.value = currentRewrite.copy(sectionBySectionRewrite = updatedSections)
+                }
+            } catch (e: Exception) {
+                e.printStackTrace()
+            }
+        }
+    }
+
+    fun approveFutureSkill(skillName: String) {
+        viewModelScope.launch {
+            try {
+                // 1. Add as a study task to learn this skill
+                repository.addTask(
+                    StudyTaskEntity(
+                        title = "Learn and master $skillName",
+                        category = "Skill Recommendation",
+                        durationType = "DAILY",
+                        isCompleted = false
+                    )
+                )
+                
+                // 2. Append to profile skills
+                val profile = userProfile.value
+                if (profile != null) {
+                    val currentSkills = profile.skillsRaw.split(",").map { it.trim() }.toMutableList()
+                    if (!currentSkills.contains(skillName)) {
+                        currentSkills.add(skillName)
+                        val updatedProfile = profile.copy(skillsRaw = currentSkills.joinToString(", "))
+                        repository.updateProfile(updatedProfile)
+                    }
+                }
+                
+                // Remove from active rewrite list
+                val currentRewrite = _activeRewriteResult.value
+                if (currentRewrite != null) {
+                    val updatedSkills = currentRewrite.recommendedFutureSkills.filter { it.skillName != skillName }
+                    _activeRewriteResult.value = currentRewrite.copy(recommendedFutureSkills = updatedSkills)
+                }
+            } catch (e: Exception) {
+                e.printStackTrace()
+            }
+        }
+    }
+
+    fun deleteResume(id: Long) {
+        viewModelScope.launch {
+            repository.deleteResume(id)
+        }
+    }
+
+    fun clearAnalysisResult() {
+        _activeAnalysisResult.value = null
+    }
+
+    fun clearRewriteResult() {
+        _activeRewriteResult.value = null
     }
 
     // A factory to cleanly provision CareerViewModel

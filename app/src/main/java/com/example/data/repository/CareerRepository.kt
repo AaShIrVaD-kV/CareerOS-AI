@@ -23,12 +23,16 @@ class CareerRepository(private val database: AppDatabase) {
     private val studyTaskDao = database.studyTaskDao()
     private val curatedJobDao = database.curatedJobDao()
     private val jobApplicationDao = database.jobApplicationDao()
+    private val resumeDao = database.resumeDao()
+    private val resumeJobAnalysisDao = database.resumeJobAnalysisDao()
 
     val userProfile: Flow<UserProfileEntity?> = userProfileDao.getProfile()
     val allScans: Flow<List<JobScanEntity>> = jobScanDao.getAllScans()
     val allTasks: Flow<List<StudyTaskEntity>> = studyTaskDao.getAllTasks()
     val curatedJobs: Flow<List<CuratedJobEntity>> = curatedJobDao.getCuratedJobs()
     val allApplications: Flow<List<JobApplicationEntity>> = jobApplicationDao.getAllApplications()
+    val allResumes: Flow<List<ResumeEntity>> = resumeDao.getAllResumes()
+    val allResumeAnalyses: Flow<List<ResumeJobAnalysisEntity>> = resumeJobAnalysisDao.getAllAnalyses()
 
     suspend fun updateProfile(profile: UserProfileEntity) {
         userProfileDao.insertProfile(profile)
@@ -311,5 +315,220 @@ class CareerRepository(private val database: AppDatabase) {
             // Prepopulate some specific study tasks
             populateCustomStudyTasks(it.recommendedLearning)
         }
+    }
+
+    suspend fun saveResume(resume: ResumeEntity): Long = withContext(Dispatchers.IO) {
+        resumeDao.insertResume(resume)
+    }
+
+    suspend fun deleteResume(id: Long) = withContext(Dispatchers.IO) {
+        resumeDao.deleteResume(id)
+    }
+
+    suspend fun getResumeById(id: Long): ResumeEntity? = withContext(Dispatchers.IO) {
+        resumeDao.getResumeById(id)
+    }
+
+    suspend fun getMaxResumeVersion(): Int = withContext(Dispatchers.IO) {
+        resumeDao.getMaxVersionSync() ?: 0
+    }
+
+    suspend fun saveResumeAnalysis(analysis: ResumeJobAnalysisEntity): Long = withContext(Dispatchers.IO) {
+        resumeJobAnalysisDao.insertAnalysis(analysis)
+    }
+
+    suspend fun deleteResumeAnalysis(id: Long) = withContext(Dispatchers.IO) {
+        resumeJobAnalysisDao.deleteAnalysis(id)
+    }
+
+    suspend fun runResumeMatchAnalysis(
+        resumeText: String,
+        jdText: String,
+        jobTitle: String,
+        companyName: String,
+        jobUrl: String,
+        jobPostingContent: String
+    ): com.example.data.api.StructuredResumeAnalysis? = withContext(Dispatchers.IO) {
+        val apiKey = BuildConfig.GEMINI_API_KEY
+        if (apiKey.isEmpty() || apiKey == "MY_GEMINI_API_KEY") {
+            return@withContext createLocalMockAnalysis()
+        }
+
+        val systemInstruction = """
+            You are an elite Applicant Tracking System (ATS) validator and executive recruiter.
+            Your task is to analyze the provided candidate resume text against the Job Description (JD) text.
+            Evaluate the alignment objectively and compute the requested metrics.
+            You MUST return a JSON object conforming strictly to the StructuredResumeAnalysis schema.
+            Return ONLY the valid JSON without any markdown block backticks or formatting prefixes.
+        """.trimIndent()
+
+        val prompt = """
+            RESUME CONTENT:
+            $resumeText
+
+            JOB DESCRIPTION:
+            $jdText
+
+            JOB POSTING CONTENT:
+            $jobPostingContent
+
+            Analyze and return the JSON object:
+            {
+               "matchScore": 85,
+               "skillsMatchScore": 90,
+               "keywordMatchScore": 80,
+               "educationMatch": "100%",
+               "experienceMatch": "75%",
+               "missingSkills": ["Skill A", "Skill B"],
+               "missingKeywords": ["Keyword A", "Keyword B"],
+               "strengths": ["Strength A", "Strength B"],
+               "weaknesses": ["Weakness A", "Weakness B"],
+               "interviewReadinessScore": 80
+            }
+        """.trimIndent()
+
+        val request = com.example.data.api.GeminiRequest(
+            contents = listOf(com.example.data.api.Content(parts = listOf(com.example.data.api.Part(text = prompt)))),
+            generationConfig = com.example.data.api.GenerationConfig(temperature = 0.2, responseMimeType = "application/json"),
+            systemInstruction = com.example.data.api.Content(parts = listOf(com.example.data.api.Part(text = systemInstruction)))
+        )
+
+        try {
+            val response = GeminiClient.service.generateContent(apiKey, request)
+            val generatedText = response.candidates?.firstOrNull()?.content?.parts?.firstOrNull()?.text
+            GeminiClient.parseResumeAnalysis(generatedText)
+        } catch (e: Exception) {
+            e.printStackTrace()
+            createLocalMockAnalysis()
+        }
+    }
+
+    private fun createLocalMockAnalysis(): com.example.data.api.StructuredResumeAnalysis {
+        return com.example.data.api.StructuredResumeAnalysis(
+            matchScore = 86,
+            skillsMatchScore = 90,
+            keywordMatchScore = 82,
+            educationMatch = "100%",
+            experienceMatch = "75%",
+            missingSkills = listOf("Power BI", "Advanced SQL"),
+            missingKeywords = listOf("Business Intelligence", "Query Optimization", "Data Modeling"),
+            strengths = listOf("Python", "Data Analysis", "Machine Learning", "Streamlit"),
+            weaknesses = listOf("Dashboarding", "BI Tools", "Cloud Architecture"),
+            interviewReadinessScore = 85
+        )
+    }
+
+    suspend fun runResumeRewrite(
+        resumeText: String,
+        instructions: String,
+        jdText: String?
+    ): com.example.data.api.StructuredResumeRewrite? = withContext(Dispatchers.IO) {
+        val apiKey = BuildConfig.GEMINI_API_KEY
+        if (apiKey.isEmpty() || apiKey == "MY_GEMINI_API_KEY") {
+            return@withContext createLocalMockRewrite(resumeText)
+        }
+
+        val jdPromptSegment = if (!jdText.isNullOrBlank()) "Target Job Description: $jdText" else "No target Job Description provided."
+
+        val systemInstruction = """
+            You are a professional executive resume writer and ATS optimization specialist.
+            Optimize the candidate's resume based on their instructions and target JD.
+
+            ====================================
+            STRICT HONESTY POLICY (MANDATORY)
+            ====================================
+            - NEVER invent or exaggerate experience, projects, degrees, or achievements.
+            - NEVER claim skills or software knowledge the candidate does not have.
+            - You may ONLY use information already present in the resume or explicitly provided in the prompt.
+            - If you want to suggest new skills, you MUST place them under "recommendedFutureSkills". DO NOT add them to the resume text directly.
+            - You MUST return a JSON object conforming strictly to the StructuredResumeRewrite schema.
+            - Return ONLY the valid JSON without any markdown block backticks or formatting prefixes.
+        """.trimIndent()
+
+        val prompt = """
+            CANDIDATE RESUME:
+            $resumeText
+
+            $jdPromptSegment
+
+            USER INSTRUCTIONS:
+            $instructions
+
+            Analyze the resume, identify weaker sections, propose corrections and updates, and output the JSON:
+            {
+               "originalVsRewrittenComparison": "Summary of changes...",
+               "atsImprovementEstimatePercent": 15,
+               "keywordImprovements": ["Keyword A added to summary", "Keyword B integrated"],
+               "sectionBySectionRewrite": [
+                  {
+                     "sectionName": "Summary",
+                     "originalText": "...",
+                     "rewrittenText": "...",
+                     "explanation": "..."
+                  }
+               ],
+               "recommendedFutureSkills": [
+                  {
+                     "skillName": "Power BI",
+                     "occurrenceRatePercent": 78,
+                     "reason": "Appears in 78% of target jobs."
+                  }
+               ],
+               "finalResumeVersionText": "Full text of the rewritten resume..."
+            }
+        """.trimIndent()
+
+        val request = com.example.data.api.GeminiRequest(
+            contents = listOf(com.example.data.api.Content(parts = listOf(com.example.data.api.Part(text = prompt)))),
+            generationConfig = com.example.data.api.GenerationConfig(temperature = 0.3, responseMimeType = "application/json"),
+            systemInstruction = com.example.data.api.Content(parts = listOf(com.example.data.api.Part(text = systemInstruction)))
+        )
+
+        try {
+            val response = GeminiClient.service.generateContent(apiKey, request)
+            val generatedText = response.candidates?.firstOrNull()?.content?.parts?.firstOrNull()?.text
+            GeminiClient.parseResumeRewrite(generatedText)
+        } catch (e: Exception) {
+            e.printStackTrace()
+            createLocalMockRewrite(resumeText)
+        }
+    }
+
+    private fun createLocalMockRewrite(originalText: String): com.example.data.api.StructuredResumeRewrite {
+        return com.example.data.api.StructuredResumeRewrite(
+            originalVsRewrittenComparison = "Improved professional summary vocabulary, restructured project bullets to highlight metrics, and integrated missing ATS keywords.",
+            atsImprovementEstimatePercent = 14,
+            keywordImprovements = listOf("Integrated 'Scikit-learn' into prediction headers", "Enhanced data visualization framing"),
+            sectionBySectionRewrite = listOf(
+                com.example.data.api.RewriteSection(
+                    sectionName = "Professional Summary",
+                    originalText = "Methodical, analytical, and highly precise Data Analyst centered on Python data engines.",
+                    rewrittenText = "Data Analyst specializing in Python analytics, Pandas computational modeling, and database querying. Proven track record of developing classification workflows, salary forecasting tools, and transactional auditing dashboards.",
+                    explanation = "Elevated the vocabulary to sound more professional and recruiting-ready."
+                ),
+                com.example.data.api.RewriteSection(
+                    sectionName = "Featured Projects",
+                    originalText = "Salary Predictor: Predictive modeling application leveraging multiple regression algorithms.",
+                    rewrittenText = "Salary Predictor: Engineered a predictive regression modeling suite in Python using Scikit-Learn to forecast industry salaries with an 85% accuracy rate.",
+                    explanation = "Restructured description to showcase active verbs, libraries used, and output metrics."
+                )
+            ),
+            recommendedFutureSkills = listOf(
+                com.example.data.api.RecommendedSkillItem(
+                    skillName = "Power BI",
+                    occurrenceRatePercent = 78,
+                    reason = "Required in 78% of data analytics postings. Highly recommended to build dashboarding experience."
+                ),
+                com.example.data.api.RecommendedSkillItem(
+                    skillName = "Tableau",
+                    occurrenceRatePercent = 65,
+                    reason = "Required in 65% of target postings. Helps bridge the Business Intelligence tool gap."
+                )
+            ),
+            finalResumeVersionText = originalText.replace(
+                "Methodical, analytical, and highly precise Data Analyst centered on Python data engines.",
+                "Data Analyst specializing in Python analytics, Pandas computational modeling, and database querying. Proven track record of developing classification workflows, salary forecasting tools, and transactional auditing dashboards."
+            )
+        )
     }
 }

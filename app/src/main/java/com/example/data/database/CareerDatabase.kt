@@ -87,6 +87,43 @@ data class JobApplicationEntity(
     val lastUpdate: Long = System.currentTimeMillis()
 )
 
+@Entity(tableName = "resumes")
+data class ResumeEntity(
+    @PrimaryKey(autoGenerate = true) val id: Long = 0,
+    val name: String,
+    val version: Int,
+    val rawText: String,
+    val skillsRaw: String,
+    val educationRaw: String,
+    val experienceRaw: String,
+    val certificationsRaw: String,
+    val projectsRaw: String,
+    val timestamp: Long = System.currentTimeMillis()
+)
+
+@Entity(tableName = "resume_job_analyses")
+data class ResumeJobAnalysisEntity(
+    @PrimaryKey(autoGenerate = true) val id: Long = 0,
+    val resumeId: Long,
+    val resumeVersion: Int,
+    val jobTitle: String,
+    val companyName: String,
+    val jobUrl: String,
+    val jobDescriptionText: String,
+    val jobPostingContent: String,
+    val matchScore: Int,
+    val skillsMatchScore: Int,
+    val keywordMatchScore: Int,
+    val educationMatch: String,
+    val experienceMatch: String,
+    val missingSkillsRaw: String,
+    val missingKeywordsRaw: String,
+    val strengthsRaw: String,
+    val weaknessesRaw: String,
+    val interviewReadinessScore: Int,
+    val timestamp: Long = System.currentTimeMillis()
+)
+
 // ==========================================
 // TYPE CONVERTERS
 // ==========================================
@@ -193,6 +230,45 @@ interface JobApplicationDao {
     suspend fun findFirstByCompany(company: String): JobApplicationEntity?
 }
 
+@Dao
+interface ResumeDao {
+    @Query("SELECT * FROM resumes ORDER BY timestamp DESC")
+    fun getAllResumes(): Flow<List<ResumeEntity>>
+
+    @Query("SELECT * FROM resumes WHERE id = :id LIMIT 1")
+    suspend fun getResumeById(id: Long): ResumeEntity?
+
+    @Query("SELECT * FROM resumes ORDER BY version DESC")
+    suspend fun getAllResumesSync(): List<ResumeEntity>
+
+    @Query("SELECT MAX(version) FROM resumes")
+    suspend fun getMaxVersionSync(): Int?
+
+    @Insert(onConflict = OnConflictStrategy.REPLACE)
+    suspend fun insertResume(resume: ResumeEntity): Long
+
+    @Query("DELETE FROM resumes WHERE id = :id")
+    suspend fun deleteResume(id: Long)
+    
+    @Query("DELETE FROM resumes")
+    suspend fun deleteAll()
+}
+
+@Dao
+interface ResumeJobAnalysisDao {
+    @Query("SELECT * FROM resume_job_analyses ORDER BY timestamp DESC")
+    fun getAllAnalyses(): Flow<List<ResumeJobAnalysisEntity>>
+
+    @Insert(onConflict = OnConflictStrategy.REPLACE)
+    suspend fun insertAnalysis(analysis: ResumeJobAnalysisEntity): Long
+
+    @Query("DELETE FROM resume_job_analyses WHERE id = :id")
+    suspend fun deleteAnalysis(id: Long)
+
+    @Query("DELETE FROM resume_job_analyses")
+    suspend fun deleteAll()
+}
+
 // ==========================================
 // APPDATABASE
 // ==========================================
@@ -203,9 +279,11 @@ interface JobApplicationDao {
         JobScanEntity::class,
         StudyTaskEntity::class,
         CuratedJobEntity::class,
-        JobApplicationEntity::class
+        JobApplicationEntity::class,
+        ResumeEntity::class,
+        ResumeJobAnalysisEntity::class
     ],
-    version = 1,
+    version = 2,
     exportSchema = false
 )
 @TypeConverters(Converters::class)
@@ -215,6 +293,8 @@ abstract class AppDatabase : RoomDatabase() {
     abstract fun studyTaskDao(): StudyTaskDao
     abstract fun curatedJobDao(): CuratedJobDao
     abstract fun jobApplicationDao(): JobApplicationDao
+    abstract fun resumeDao(): ResumeDao
+    abstract fun resumeJobAnalysisDao(): ResumeJobAnalysisDao
 
     companion object {
         @Volatile
@@ -227,6 +307,7 @@ abstract class AppDatabase : RoomDatabase() {
                     AppDatabase::class.java,
                     "careeros_ai_database"
                 )
+                .fallbackToDestructiveMigration()
                 .addCallback(DatabasePrepopulationCallback(context))
                 .build()
                 INSTANCE = instance

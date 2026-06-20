@@ -107,6 +107,45 @@ data class StructuredAnalysisResult(
     val recommendedLearning: StructuredLearningPlan
 )
 
+@JsonClass(generateAdapter = true)
+data class StructuredResumeAnalysis(
+    val matchScore: Int,
+    val skillsMatchScore: Int,
+    val keywordMatchScore: Int,
+    val educationMatch: String,
+    val experienceMatch: String,
+    val missingSkills: List<String>,
+    val missingKeywords: List<String>,
+    val strengths: List<String>,
+    val weaknesses: List<String>,
+    val interviewReadinessScore: Int
+)
+
+@JsonClass(generateAdapter = true)
+data class RewriteSection(
+    val sectionName: String,
+    val originalText: String,
+    val rewrittenText: String,
+    val explanation: String
+)
+
+@JsonClass(generateAdapter = true)
+data class RecommendedSkillItem(
+    val skillName: String,
+    val occurrenceRatePercent: Int,
+    val reason: String
+)
+
+@JsonClass(generateAdapter = true)
+data class StructuredResumeRewrite(
+    val originalVsRewrittenComparison: String,
+    val atsImprovementEstimatePercent: Int,
+    val keywordImprovements: List<String>,
+    val sectionBySectionRewrite: List<RewriteSection>,
+    val recommendedFutureSkills: List<RecommendedSkillItem>,
+    val finalResumeVersionText: String
+)
+
 // ==========================================
 // RETROFIT CLIENT
 // ==========================================
@@ -153,6 +192,38 @@ object GeminiClient {
         return try {
             val jsonAdapter = moshi.adapter(StructuredAnalysisResult::class.java)
             // Trim markdown fences if Gemini added them despite rules
+            val cleaned = jsonString.trim()
+                .removePrefix("```json")
+                .removePrefix("```")
+                .removeSuffix("```")
+                .trim()
+            jsonAdapter.fromJson(cleaned)
+        } catch (e: Exception) {
+            e.printStackTrace()
+            null
+        }
+    }
+
+    fun parseResumeAnalysis(jsonString: StringOrNull): StructuredResumeAnalysis? {
+        if (jsonString.isNullOrEmpty()) return null
+        return try {
+            val jsonAdapter = moshi.adapter(StructuredResumeAnalysis::class.java)
+            val cleaned = jsonString.trim()
+                .removePrefix("```json")
+                .removePrefix("```")
+                .removeSuffix("```")
+                .trim()
+            jsonAdapter.fromJson(cleaned)
+        } catch (e: Exception) {
+            e.printStackTrace()
+            null
+        }
+    }
+
+    fun parseResumeRewrite(jsonString: StringOrNull): StructuredResumeRewrite? {
+        if (jsonString.isNullOrEmpty()) return null
+        return try {
+            val jsonAdapter = moshi.adapter(StructuredResumeRewrite::class.java)
             val cleaned = jsonString.trim()
                 .removePrefix("```json")
                 .removePrefix("```")

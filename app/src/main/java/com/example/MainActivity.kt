@@ -47,10 +47,20 @@ import com.example.data.database.JobScanEntity
 import com.example.data.database.StudyTaskEntity
 import com.example.data.database.UserProfileEntity
 import com.example.data.database.JobApplicationEntity
+import com.example.data.database.ResumeEntity
+import com.example.data.database.ResumeJobAnalysisEntity
 import com.example.ui.theme.MyApplicationTheme
 import com.example.ui.viewmodel.CareerViewModel
 import com.squareup.moshi.Moshi
 import com.squareup.moshi.kotlin.reflect.KotlinJsonAdapterFactory
+import androidx.compose.ui.graphics.drawscope.Stroke
+import androidx.compose.ui.graphics.StrokeCap
+import androidx.compose.foundation.Canvas
+import androidx.compose.foundation.horizontalScroll
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.BorderStroke
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
 
 class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -124,6 +134,7 @@ fun decodeLearning(json: String?): Map<String, List<String>> {
 // CORE SYSTEM TABS
 enum class AppTab(val title: String, val icon: ImageVector, val tag: String) {
     DASHBOARD("Coach", Icons.Default.Person, "tab_dashboard"),
+    RESUME_STUDIO("Resume Studio", Icons.Default.Edit, "tab_resume_studio"),
     ATS_SCAN("ATS Scan", Icons.Default.Check, "tab_ats_scan"),
     JOBS("Jobs Feed", Icons.Default.Search, "tab_jobs"),
     TRACKER("Tracker CRM", Icons.Default.List, "tab_tracker"),
@@ -289,6 +300,9 @@ fun MainAppScreen() {
                     )
                     AppTab.TRACKER -> TrackerScreen(
                         applications = applications,
+                        viewModel = viewModel
+                    )
+                    AppTab.RESUME_STUDIO -> ResumeStudioScreen(
                         viewModel = viewModel
                     )
                     AppTab.LEARNING -> StudyDeskCombinedScreen(
@@ -2929,6 +2943,1013 @@ fun ChatBubbleItem(message: com.example.ui.viewmodel.ChatMessage) {
                     color = if (message.isUser) MaterialTheme.colorScheme.onPrimary
                     else MaterialTheme.colorScheme.onSurface
                 )
+            }
+        }
+    }
+}
+
+@Composable
+fun ResumeStudioScreen(viewModel: CareerViewModel) {
+    val context = LocalContext.current
+    val resumes by viewModel.allResumes.collectAsStateWithLifecycle()
+    val analyses by viewModel.allResumeAnalyses.collectAsStateWithLifecycle()
+    val isAnalyzing by viewModel.isAnalyzingResume.collectAsStateWithLifecycle()
+    val analysisError by viewModel.analysisError.collectAsStateWithLifecycle()
+    val activeAnalysis by viewModel.activeAnalysisResult.collectAsStateWithLifecycle()
+    
+    val isRewriting by viewModel.isRewritingResume.collectAsStateWithLifecycle()
+    val rewriteError by viewModel.rewriteError.collectAsStateWithLifecycle()
+    val activeRewrite by viewModel.activeRewriteResult.collectAsStateWithLifecycle()
+
+    var activeSubTab by remember { mutableStateOf(0) }
+    var selectedResumeId by remember { mutableStateOf<Long?>(null) }
+    
+    var jobTitle by remember { mutableStateOf("") }
+    var companyName by remember { mutableStateOf("") }
+    var jobUrl by remember { mutableStateOf("") }
+    var jobPostingContent by remember { mutableStateOf("") }
+    var jobDescriptionText by remember { mutableStateOf("") }
+
+    var promptInstructions by remember { mutableStateOf("") }
+    var targetJd by remember { mutableStateOf("") }
+
+    // Auto-select latest resume if none selected
+    LaunchedEffect(resumes) {
+        if (selectedResumeId == null && resumes.isNotEmpty()) {
+            selectedResumeId = resumes.first().id
+        }
+    }
+
+    val selectedResume = resumes.find { it.id == selectedResumeId }
+
+    // System Document Picker Launcher
+    val documentLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.OpenDocument()
+    ) { uri ->
+        uri?.let {
+            val fileName = ResumeTextExtractor.getFileName(context, it)
+            viewModel.uploadAndSaveResume(context, it, fileName)
+        }
+    }
+
+    Column(
+        modifier = Modifier
+            .fillMaxSize()
+            .background(MaterialTheme.colorScheme.background)
+    ) {
+        // Tab Headers
+        TabRow(
+            selectedTabIndex = activeSubTab,
+            containerColor = MaterialTheme.colorScheme.background,
+            contentColor = MaterialTheme.colorScheme.primary,
+            modifier = Modifier.fillMaxWidth()
+        ) {
+            Tab(
+                selected = activeSubTab == 0,
+                onClick = { activeSubTab = 0 },
+                text = { Text("Manager", fontSize = 11.sp, fontWeight = FontWeight.Bold) },
+                icon = { Icon(Icons.Default.List, contentDescription = null, modifier = Modifier.size(16.dp)) },
+                modifier = Modifier.testTag("resume_studio_tab_manager")
+            )
+            Tab(
+                selected = activeSubTab == 1,
+                onClick = { activeSubTab = 1 },
+                text = { Text("ATS Matcher", fontSize = 11.sp, fontWeight = FontWeight.Bold) },
+                icon = { Icon(Icons.Default.CheckCircle, contentDescription = null, modifier = Modifier.size(16.dp)) },
+                modifier = Modifier.testTag("resume_studio_tab_matcher")
+            )
+            Tab(
+                selected = activeSubTab == 2,
+                onClick = { activeSubTab = 2 },
+                text = { Text("AI Rewriter", fontSize = 11.sp, fontWeight = FontWeight.Bold) },
+                icon = { Icon(Icons.Default.Edit, contentDescription = null, modifier = Modifier.size(16.dp)) },
+                modifier = Modifier.testTag("resume_studio_tab_rewriter")
+            )
+            Tab(
+                selected = activeSubTab == 3,
+                onClick = { activeSubTab = 3 },
+                text = { Text("Analytics", fontSize = 11.sp, fontWeight = FontWeight.Bold) },
+                icon = { Icon(Icons.Default.Star, contentDescription = null, modifier = Modifier.size(16.dp)) },
+                modifier = Modifier.testTag("resume_studio_tab_analytics")
+            )
+        }
+
+        LazyColumn(
+            modifier = Modifier
+                .fillMaxSize()
+                .padding(16.dp)
+                .testTag("resume_studio_screen"),
+            verticalArrangement = Arrangement.spacedBy(16.dp)
+        ) {
+            if (activeSubTab == 0) {
+                // Resume Manager View
+                item {
+                    Card(
+                        modifier = Modifier.fillMaxWidth(),
+                        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
+                        elevation = CardDefaults.cardElevation(defaultElevation = 2.dp)
+                    ) {
+                        Column(modifier = Modifier.padding(16.dp)) {
+                            Text(
+                                text = "Resume Version Controller",
+                                fontSize = 16.sp,
+                                fontWeight = FontWeight.Bold,
+                                color = MaterialTheme.colorScheme.onBackground
+                            )
+                            Spacer(modifier = Modifier.height(4.dp))
+                            Text(
+                                text = "Upload, manage, and audit your resume files. Version history tracks your progression.",
+                                fontSize = 12.sp,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                            )
+                            Spacer(modifier = Modifier.height(16.dp))
+                            
+                            Button(
+                                onClick = {
+                                    documentLauncher.launch(
+                                        arrayOf(
+                                            "application/pdf",
+                                            "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+                                            "text/plain"
+                                        )
+                                    )
+                                },
+                                modifier = Modifier.fillMaxWidth().testTag("upload_resume_button"),
+                                colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.primary),
+                                shape = RoundedCornerShape(8.dp)
+                            ) {
+                                Icon(imageVector = Icons.Default.Add, contentDescription = null)
+                                Spacer(modifier = Modifier.width(8.dp))
+                                Text("Upload Resume Document", fontWeight = FontWeight.Bold)
+                            }
+                        }
+                    }
+                }
+
+                if (resumes.isEmpty()) {
+                    item {
+                        Box(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .padding(30.dp),
+                            contentAlignment = Alignment.Center
+                        ) {
+                            Text(
+                                "No resumes uploaded yet. Click above to select a file.",
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                fontSize = 13.sp,
+                                textAlign = TextAlign.Center
+                            )
+                        }
+                    }
+                } else {
+                    item {
+                        Text(
+                            text = "Your Saved Resumes",
+                            fontSize = 14.sp,
+                            fontWeight = FontWeight.Bold,
+                            color = MaterialTheme.colorScheme.onBackground
+                        )
+                    }
+
+                    items(resumes) { resume ->
+                        val isSelected = selectedResumeId == resume.id
+                        Card(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .clickable { selectedResumeId = resume.id }
+                                .border(
+                                    1.dp,
+                                    if (isSelected) MaterialTheme.colorScheme.primary else Color.Transparent,
+                                    RoundedCornerShape(10.dp)
+                                )
+                                .testTag("resume_item_${resume.version}"),
+                            colors = CardDefaults.cardColors(
+                                containerColor = if (isSelected) MaterialTheme.colorScheme.primary.copy(alpha = 0.05f) else MaterialTheme.colorScheme.surface
+                            )
+                        ) {
+                            Row(
+                                modifier = Modifier
+                                    .padding(16.dp)
+                                    .fillMaxWidth(),
+                                horizontalArrangement = Arrangement.SpaceBetween,
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                Column(modifier = Modifier.weight(1f)) {
+                                    Row(verticalAlignment = Alignment.CenterVertically) {
+                                        Text(
+                                            text = resume.name,
+                                            fontWeight = FontWeight.Bold,
+                                            fontSize = 14.sp,
+                                            color = MaterialTheme.colorScheme.onSurface
+                                        )
+                                        Spacer(modifier = Modifier.width(8.dp))
+                                        Box(
+                                            modifier = Modifier
+                                                .background(
+                                                    MaterialTheme.colorScheme.primary.copy(alpha = 0.15f),
+                                                    RoundedCornerShape(4.dp)
+                                                )
+                                                .padding(horizontal = 6.dp, vertical = 2.dp)
+                                        ) {
+                                            Text(
+                                                text = "v${resume.version}",
+                                                fontSize = 10.sp,
+                                                fontWeight = FontWeight.Bold,
+                                                color = MaterialTheme.colorScheme.primary
+                                            )
+                                        }
+                                    }
+                                    Spacer(modifier = Modifier.height(4.dp))
+                                    Text(
+                                        text = "Skills: " + if (resume.skillsRaw.length > 40) resume.skillsRaw.take(40) + "..." else resume.skillsRaw,
+                                        fontSize = 11.sp,
+                                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                                    )
+                                    Text(
+                                        text = "Added: " + java.text.SimpleDateFormat("yyyy-MM-dd HH:mm", java.util.Locale.US).format(java.util.Date(resume.timestamp)),
+                                        fontSize = 10.sp,
+                                        color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.7f)
+                                    )
+                                }
+                                
+                                Row {
+                                    IconButton(
+                                        onClick = {
+                                            copyToClipboard(context, "Resume Text", resume.rawText)
+                                        }
+                                    ) {
+                                        Icon(
+                                            imageVector = Icons.Default.Share,
+                                            contentDescription = "Copy text",
+                                            tint = MaterialTheme.colorScheme.primary
+                                        )
+                                    }
+                                    
+                                    IconButton(onClick = { viewModel.deleteResume(resume.id) }) {
+                                        Icon(
+                                            imageVector = Icons.Default.Delete,
+                                            contentDescription = "Delete",
+                                            tint = MaterialTheme.colorScheme.error
+                                        )
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            } else if (activeSubTab == 1) {
+                // ATS Matcher view
+                if (selectedResume == null) {
+                    item {
+                        Text(
+                            text = "Please upload and select a resume in the Manager tab first.",
+                            color = MaterialTheme.colorScheme.error,
+                            fontWeight = FontWeight.SemiBold
+                        )
+                    }
+                } else {
+                    item {
+                        Card(
+                            modifier = Modifier.fillMaxWidth(),
+                            colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface)
+                        ) {
+                            Column(modifier = Modifier.padding(16.dp)) {
+                                Text(
+                                    text = "Target Job Information (v${selectedResume.version})",
+                                    fontSize = 14.sp,
+                                    fontWeight = FontWeight.Bold,
+                                    color = MaterialTheme.colorScheme.onBackground
+                                )
+                                Spacer(modifier = Modifier.height(10.dp))
+                                
+                                OutlinedTextField(
+                                    value = jobTitle,
+                                    onValueChange = { jobTitle = it },
+                                    label = { Text("Job Title") },
+                                    modifier = Modifier.fillMaxWidth().testTag("jd_title_input"),
+                                    textStyle = TextStyle(fontSize = 12.sp)
+                                )
+                                Spacer(modifier = Modifier.height(8.dp))
+                                OutlinedTextField(
+                                    value = companyName,
+                                    onValueChange = { companyName = it },
+                                    label = { Text("Company Name") },
+                                    modifier = Modifier.fillMaxWidth().testTag("jd_company_input"),
+                                    textStyle = TextStyle(fontSize = 12.sp)
+                                )
+                                Spacer(modifier = Modifier.height(8.dp))
+                                OutlinedTextField(
+                                    value = jobUrl,
+                                    onValueChange = { jobUrl = it },
+                                    label = { Text("Job URL (Optional)") },
+                                    modifier = Modifier.fillMaxWidth().testTag("jd_url_input"),
+                                    textStyle = TextStyle(fontSize = 12.sp)
+                                )
+                                Spacer(modifier = Modifier.height(8.dp))
+                                OutlinedTextField(
+                                    value = jobDescriptionText,
+                                    onValueChange = { jobDescriptionText = it },
+                                    label = { Text("Job Description (Paste requirements here)") },
+                                    modifier = Modifier
+                                        .fillMaxWidth()
+                                        .height(120.dp)
+                                        .testTag("jd_content_input"),
+                                    textStyle = TextStyle(fontSize = 12.sp)
+                                )
+                                Spacer(modifier = Modifier.height(12.dp))
+                                
+                                if (analysisError != null) {
+                                    Text(
+                                        text = analysisError ?: "",
+                                        color = MaterialTheme.colorScheme.error,
+                                        fontSize = 11.sp
+                                    )
+                                    Spacer(modifier = Modifier.height(8.dp))
+                                }
+                                
+                                Button(
+                                    onClick = {
+                                        viewModel.analyzeResumeMatch(
+                                            resumeId = selectedResume.id,
+                                            jobTitle = jobTitle,
+                                            companyName = companyName,
+                                            jobUrl = jobUrl,
+                                            jobPostingContent = jobPostingContent,
+                                            jobDescriptionText = jobDescriptionText
+                                        )
+                                    },
+                                    enabled = !isAnalyzing,
+                                    modifier = Modifier.fillMaxWidth().testTag("run_analysis_button"),
+                                    colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.primary),
+                                    shape = RoundedCornerShape(8.dp)
+                                ) {
+                                    if (isAnalyzing) {
+                                        CircularProgressIndicator(
+                                            color = MaterialTheme.colorScheme.onPrimary,
+                                            modifier = Modifier.size(18.dp),
+                                            strokeWidth = 2.dp
+                                        )
+                                    } else {
+                                        Text("Audit & Match Resume", fontWeight = FontWeight.Bold)
+                                    }
+                                }
+                            }
+                        }
+                    }
+                    
+                    activeAnalysis?.let { result ->
+                        item {
+                            Card(
+                                modifier = Modifier.fillMaxWidth().testTag("analysis_results_card"),
+                                colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface)
+                            ) {
+                                Column(modifier = Modifier.padding(16.dp)) {
+                                    Text(
+                                        text = "ATS Alignment Audit",
+                                        fontSize = 16.sp,
+                                        fontWeight = FontWeight.Bold,
+                                        color = MaterialTheme.colorScheme.primary
+                                    )
+                                    Spacer(modifier = Modifier.height(14.dp))
+                                    
+                                    // Circular gauges row
+                                    Row(
+                                        modifier = Modifier.fillMaxWidth(),
+                                        horizontalArrangement = Arrangement.SpaceAround
+                                    ) {
+                                        ScoreGauge(score = result.matchScore, label = "Match Score", modifier = Modifier.testTag("match_score_gauge"))
+                                        ScoreGauge(score = result.skillsMatchScore, label = "Skills Match", modifier = Modifier.testTag("skills_score_gauge"))
+                                        ScoreGauge(score = result.keywordMatchScore, label = "Keyword Match", modifier = Modifier.testTag("keyword_score_gauge"))
+                                    }
+                                    
+                                    Spacer(modifier = Modifier.height(16.dp))
+                                    Divider(color = MaterialTheme.colorScheme.surfaceVariant)
+                                    Spacer(modifier = Modifier.height(16.dp))
+                                    
+                                    // Progress bars
+                                    Text("Structural Match Status", fontSize = 12.sp, fontWeight = FontWeight.Bold)
+                                    Spacer(modifier = Modifier.height(8.dp))
+                                    
+                                    Text("Education Match: ${result.educationMatch}", fontSize = 11.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                                    Spacer(modifier = Modifier.height(4.dp))
+                                    LinearProgressIndicator(
+                                        progress = if (result.educationMatch.contains("100%")) 1.0f else 0.5f,
+                                        modifier = Modifier.fillMaxWidth().height(6.dp).clip(RoundedCornerShape(3.dp)),
+                                        color = MaterialTheme.colorScheme.primary,
+                                        trackColor = MaterialTheme.colorScheme.surfaceVariant
+                                    )
+                                    Spacer(modifier = Modifier.height(12.dp))
+                                    
+                                    Text("Experience Match: ${result.experienceMatch}", fontSize = 11.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                                    Spacer(modifier = Modifier.height(4.dp))
+                                    LinearProgressIndicator(
+                                        progress = if (result.experienceMatch.contains("100%")) 1.0f else 0.75f,
+                                        modifier = Modifier.fillMaxWidth().height(6.dp).clip(RoundedCornerShape(3.dp)),
+                                        color = MaterialTheme.colorScheme.secondary,
+                                        trackColor = MaterialTheme.colorScheme.surfaceVariant
+                                    )
+                                    
+                                    Spacer(modifier = Modifier.height(16.dp))
+                                    Divider(color = MaterialTheme.colorScheme.surfaceVariant)
+                                    Spacer(modifier = Modifier.height(16.dp))
+                                    
+                                    // Strengths and Weaknesses
+                                    Text("Core Alignment Strengths", fontSize = 12.sp, fontWeight = FontWeight.Bold)
+                                    result.strengths.forEach {
+                                        Text("• $it", fontSize = 12.sp, color = MaterialTheme.colorScheme.onSurface)
+                                    }
+                                    
+                                    Spacer(modifier = Modifier.height(12.dp))
+                                    Text("Audit Identified Weaknesses", fontSize = 12.sp, fontWeight = FontWeight.Bold)
+                                    result.weaknesses.forEach {
+                                        Text("• $it", fontSize = 12.sp, color = MaterialTheme.colorScheme.onSurface)
+                                    }
+                                    
+                                    Spacer(modifier = Modifier.height(16.dp))
+                                    Divider(color = MaterialTheme.colorScheme.surfaceVariant)
+                                    Spacer(modifier = Modifier.height(16.dp))
+                                    
+                                    // Skill Gaps and Keywords
+                                    Text("Skill Gaps (Future Learning Recommendations)", fontSize = 12.sp, fontWeight = FontWeight.Bold, color = MaterialTheme.colorScheme.error)
+                                    Text("Under our Strict Honesty Policy, these require study tasks and cannot be added to your profile until learned:", fontSize = 10.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                                    Spacer(modifier = Modifier.height(4.dp))
+                                    result.missingSkills.forEach {
+                                        Text("• $it", fontSize = 12.sp, color = MaterialTheme.colorScheme.error)
+                                    }
+                                    
+                                    Spacer(modifier = Modifier.height(12.dp))
+                                    Text("Missing ATS Keywords", fontSize = 12.sp, fontWeight = FontWeight.Bold)
+                                    result.missingKeywords.forEach {
+                                        Text("• $it", fontSize = 12.sp, color = MaterialTheme.colorScheme.onSurface)
+                                    }
+                                    
+                                    Spacer(modifier = Modifier.height(16.dp))
+                                    Row(
+                                        modifier = Modifier.fillMaxWidth(),
+                                        horizontalArrangement = Arrangement.SpaceBetween,
+                                        verticalAlignment = Alignment.CenterVertically
+                                    ) {
+                                        Text("Interview Readiness: ${result.interviewReadinessScore}%", fontSize = 12.sp, fontWeight = FontWeight.Bold)
+                                        Button(
+                                            onClick = { viewModel.clearAnalysisResult() },
+                                            colors = ButtonDefaults.textButtonColors()
+                                        ) {
+                                            Text("Clear Results", fontSize = 11.sp)
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            } else if (activeSubTab == 2) {
+                // AI Rewriter view
+                if (selectedResume == null) {
+                    item {
+                        Text(
+                            text = "Please upload and select a resume in the Manager tab first.",
+                            color = MaterialTheme.colorScheme.error,
+                            fontWeight = FontWeight.SemiBold
+                        )
+                    }
+                } else {
+                    item {
+                        Card(
+                            modifier = Modifier.fillMaxWidth(),
+                            colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface)
+                        ) {
+                            Column(modifier = Modifier.padding(16.dp)) {
+                                Text(
+                                    text = "AI Resume Rewriter (Strict Honesty Policy)",
+                                    fontSize = 14.sp,
+                                    fontWeight = FontWeight.Bold,
+                                    color = MaterialTheme.colorScheme.onBackground
+                                )
+                                Spacer(modifier = Modifier.height(4.dp))
+                                Text(
+                                    text = "Tailor your sections using specific instructions. No fake skills will be added.",
+                                    fontSize = 11.sp,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                                )
+                                Spacer(modifier = Modifier.height(12.dp))
+                                
+                                OutlinedTextField(
+                                    value = promptInstructions,
+                                    onValueChange = { promptInstructions = it },
+                                    label = { Text("Optimization Instructions (e.g. Highlight SQL experience)") },
+                                    modifier = Modifier.fillMaxWidth().testTag("rewriter_instructions_input"),
+                                    textStyle = TextStyle(fontSize = 12.sp)
+                                )
+                                Spacer(modifier = Modifier.height(8.dp))
+                                OutlinedTextField(
+                                    value = targetJd,
+                                    onValueChange = { targetJd = it },
+                                    label = { Text("Target Job Description (Optional)") },
+                                    modifier = Modifier
+                                        .fillMaxWidth()
+                                        .height(100.dp)
+                                        .testTag("rewriter_jd_input"),
+                                    textStyle = TextStyle(fontSize = 12.sp)
+                                )
+                                Spacer(modifier = Modifier.height(12.dp))
+                                
+                                if (rewriteError != null) {
+                                    Text(
+                                        text = rewriteError ?: "",
+                                        color = MaterialTheme.colorScheme.error,
+                                        fontSize = 11.sp
+                                    )
+                                    Spacer(modifier = Modifier.height(8.dp))
+                                }
+                                
+                                Button(
+                                    onClick = {
+                                        viewModel.rewriteResume(
+                                            resumeId = selectedResume.id,
+                                            instructions = promptInstructions,
+                                            jdText = targetJd.ifBlank { null }
+                                        )
+                                    },
+                                    enabled = !isRewriting,
+                                    modifier = Modifier.fillMaxWidth().testTag("run_rewrite_button"),
+                                    colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.primary),
+                                    shape = RoundedCornerShape(8.dp)
+                                ) {
+                                    if (isRewriting) {
+                                        CircularProgressIndicator(
+                                            color = MaterialTheme.colorScheme.onPrimary,
+                                            modifier = Modifier.size(18.dp),
+                                            strokeWidth = 2.dp
+                                        )
+                                    } else {
+                                        Text("Generate Optimization Draft", fontWeight = FontWeight.Bold)
+                                    }
+                                }
+                            }
+                        }
+                    }
+                    
+                    activeRewrite?.let { result ->
+                        item {
+                            Card(
+                                modifier = Modifier.fillMaxWidth(),
+                                colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface)
+                            ) {
+                                Column(modifier = Modifier.padding(16.dp)) {
+                                    Text(
+                                        text = "AI Optimization Report",
+                                        fontSize = 16.sp,
+                                        fontWeight = FontWeight.Bold,
+                                        color = MaterialTheme.colorScheme.primary
+                                    )
+                                    Spacer(modifier = Modifier.height(6.dp))
+                                    Text(
+                                        text = result.originalVsRewrittenComparison,
+                                        fontSize = 12.sp,
+                                        color = MaterialTheme.colorScheme.onSurface
+                                    )
+                                    Spacer(modifier = Modifier.height(12.dp))
+                                    Text(
+                                        text = "Estimated ATS Score Increase: +${result.atsImprovementEstimatePercent}%",
+                                        fontSize = 13.sp,
+                                        fontWeight = FontWeight.Bold,
+                                        color = MaterialTheme.colorScheme.secondary
+                                    )
+                                }
+                            }
+                        }
+                        
+                        item {
+                            Text(
+                                text = "Section-by-Section Optimizations",
+                                fontSize = 14.sp,
+                                fontWeight = FontWeight.Bold,
+                                color = MaterialTheme.colorScheme.onBackground
+                            )
+                        }
+                        
+                        items(result.sectionBySectionRewrite) { section ->
+                            SectionRewriteCard(
+                                sectionName = section.sectionName,
+                                originalText = section.originalText,
+                                rewrittenText = section.rewrittenText,
+                                explanation = section.explanation,
+                                onApprove = {
+                                    viewModel.approveSectionRewrite(
+                                        resumeId = selectedResume.id,
+                                        sectionName = section.sectionName,
+                                        rewrittenText = section.rewrittenText
+                                    )
+                                    Toast.makeText(context, "${section.sectionName} updated and saved as new version!", Toast.LENGTH_SHORT).show()
+                                }
+                            )
+                        }
+                        
+                        if (result.recommendedFutureSkills.isNotEmpty()) {
+                            item {
+                                Text(
+                                    text = "Future Skill Recommendations (Honesty Guard)",
+                                    fontSize = 14.sp,
+                                    fontWeight = FontWeight.Bold,
+                                    color = MaterialTheme.colorScheme.onBackground
+                                )
+                            }
+                            
+                            items(result.recommendedFutureSkills) { itemSkill ->
+                                Card(
+                                    modifier = Modifier.fillMaxWidth().testTag("future_skill_${itemSkill.skillName}"),
+                                    colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
+                                    shape = RoundedCornerShape(10.dp),
+                                    border = BorderStroke(1.dp, MaterialTheme.colorScheme.surfaceVariant)
+                                ) {
+                                    Row(
+                                        modifier = Modifier
+                                            .fillMaxWidth()
+                                            .padding(12.dp),
+                                        horizontalArrangement = Arrangement.SpaceBetween,
+                                        verticalAlignment = Alignment.CenterVertically
+                                    ) {
+                                        Column(modifier = Modifier.weight(1f)) {
+                                            Text(
+                                                text = itemSkill.skillName,
+                                                fontWeight = FontWeight.Bold,
+                                                fontSize = 13.sp,
+                                                color = MaterialTheme.colorScheme.onSurface
+                                            )
+                                            Text(
+                                                text = "Required in ${itemSkill.occurrenceRatePercent}% of matching roles. ${itemSkill.reason}",
+                                                fontSize = 11.sp,
+                                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                                            )
+                                        }
+                                        
+                                        Button(
+                                            onClick = {
+                                                viewModel.approveFutureSkill(itemSkill.skillName)
+                                                Toast.makeText(context, "${itemSkill.skillName} added to Study Desk & Profile!", Toast.LENGTH_SHORT).show()
+                                            },
+                                            colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.secondary),
+                                            shape = RoundedCornerShape(6.dp),
+                                            contentPadding = PaddingValues(horizontal = 10.dp, vertical = 2.dp)
+                                        ) {
+                                            Text("Approve & Learn", fontSize = 10.sp, color = MaterialTheme.colorScheme.onSecondary)
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                        
+                        item {
+                            Button(
+                                onClick = { viewModel.clearRewriteResult() },
+                                colors = ButtonDefaults.textButtonColors(),
+                                modifier = Modifier.fillMaxWidth()
+                            ) {
+                                Text("Clear Rewriter Draft")
+                            }
+                        }
+                    }
+                }
+            } else if (activeSubTab == 3) {
+                // Analytics view
+                item {
+                    Card(
+                        modifier = Modifier.fillMaxWidth(),
+                        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface)
+                    ) {
+                        Column(modifier = Modifier.padding(16.dp)) {
+                            Text(
+                                text = "Career Memory Analytics",
+                                fontSize = 16.sp,
+                                fontWeight = FontWeight.Bold,
+                                color = MaterialTheme.colorScheme.primary
+                            )
+                            Spacer(modifier = Modifier.height(4.dp))
+                            Text(
+                                text = "Track the alignment progression of your resume drafts across various application versions.",
+                                fontSize = 12.sp,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                            )
+                            Spacer(modifier = Modifier.height(16.dp))
+                            
+                            ScoreProgressionChart(analyses = analyses)
+                        }
+                    }
+                }
+                
+                if (analyses.isEmpty()) {
+                    item {
+                        Box(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .padding(30.dp),
+                            contentAlignment = Alignment.Center
+                        ) {
+                            Text(
+                                "No match audits run yet. Results will plot here once you analyze a resume.",
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                fontSize = 13.sp,
+                                textAlign = TextAlign.Center
+                            )
+                        }
+                    }
+                } else {
+                    item {
+                        Text(
+                            text = "Historical Audits Log",
+                            fontSize = 14.sp,
+                            fontWeight = FontWeight.Bold,
+                            color = MaterialTheme.colorScheme.onBackground
+                        )
+                    }
+                    
+                    items(analyses.sortedByDescending { it.timestamp }) { itemAnalysis ->
+                        Card(
+                            modifier = Modifier.fillMaxWidth(),
+                            colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface)
+                        ) {
+                            Column(modifier = Modifier.padding(16.dp)) {
+                                Row(
+                                    modifier = Modifier.fillMaxWidth(),
+                                    horizontalArrangement = Arrangement.SpaceBetween,
+                                    verticalAlignment = Alignment.CenterVertically
+                                ) {
+                                    Column {
+                                        Text(
+                                            text = itemAnalysis.jobTitle,
+                                            fontWeight = FontWeight.Bold,
+                                            fontSize = 14.sp
+                                        )
+                                        Text(
+                                            text = "${itemAnalysis.companyName} • Resume v${itemAnalysis.resumeVersion}",
+                                            fontSize = 12.sp,
+                                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                                        )
+                                    }
+                                    
+                                    Box(
+                                        modifier = Modifier
+                                            .background(
+                                                MaterialTheme.colorScheme.primary.copy(alpha = 0.15f),
+                                                RoundedCornerShape(6.dp)
+                                            )
+                                            .padding(horizontal = 8.dp, vertical = 4.dp)
+                                    ) {
+                                        Text(
+                                            text = "${itemAnalysis.matchScore}%",
+                                            fontWeight = FontWeight.ExtraBold,
+                                            color = MaterialTheme.colorScheme.primary,
+                                            fontSize = 14.sp
+                                        )
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+@Composable
+fun ScoreGauge(score: Int, label: String, modifier: Modifier = Modifier) {
+    val primaryColor = MaterialTheme.colorScheme.primary
+    val backgroundColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.4f)
+    
+    Column(
+        horizontalAlignment = Alignment.CenterHorizontally,
+        modifier = modifier.padding(8.dp)
+    ) {
+        Box(
+            contentAlignment = Alignment.Center,
+            modifier = Modifier.size(90.dp)
+        ) {
+            Canvas(modifier = Modifier.fillMaxSize()) {
+                // Background circle
+                drawCircle(
+                    color = backgroundColor,
+                    style = Stroke(width = 8.dp.toPx())
+                )
+                // Score Arc
+                drawArc(
+                    color = primaryColor,
+                    startAngle = -90f,
+                    sweepAngle = (score / 100f) * 360f,
+                    useCenter = false,
+                    style = Stroke(width = 8.dp.toPx(), cap = StrokeCap.Round)
+                )
+            }
+            Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                Text(
+                    text = "$score%",
+                    fontSize = 18.sp,
+                    fontWeight = FontWeight.ExtraBold,
+                    color = MaterialTheme.colorScheme.onBackground
+                )
+            }
+        }
+        Spacer(modifier = Modifier.height(6.dp))
+        Text(
+            text = label,
+            fontSize = 11.sp,
+            fontWeight = FontWeight.SemiBold,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+            textAlign = TextAlign.Center
+        )
+    }
+}
+
+@Composable
+fun SectionRewriteCard(
+    sectionName: String,
+    originalText: String,
+    rewrittenText: String,
+    explanation: String,
+    onApprove: () -> Unit
+) {
+    Card(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(vertical = 8.dp),
+        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
+        shape = RoundedCornerShape(12.dp),
+        border = BorderStroke(1.dp, MaterialTheme.colorScheme.surfaceVariant)
+    ) {
+        Column(modifier = Modifier.padding(16.dp)) {
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Text(
+                    text = sectionName,
+                    fontSize = 14.sp,
+                    fontWeight = FontWeight.Bold,
+                    color = MaterialTheme.colorScheme.primary
+                )
+                
+                Button(
+                    onClick = onApprove,
+                    colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.primary),
+                    contentPadding = PaddingValues(horizontal = 12.dp, vertical = 4.dp),
+                    shape = RoundedCornerShape(6.dp)
+                ) {
+                    Icon(
+                        imageVector = Icons.Default.Check,
+                        contentDescription = null,
+                        tint = MaterialTheme.colorScheme.onPrimary,
+                        modifier = Modifier.size(14.dp)
+                    )
+                    Spacer(modifier = Modifier.width(4.dp))
+                    Text("Approve Update", fontSize = 11.sp, color = MaterialTheme.colorScheme.onPrimary)
+                }
+            }
+            Spacer(modifier = Modifier.height(10.dp))
+            
+            // Original Block
+            Text(
+                text = "Original:",
+                fontSize = 11.sp,
+                fontWeight = FontWeight.Bold,
+                color = MaterialTheme.colorScheme.onSurfaceVariant
+            )
+            Text(
+                text = originalText,
+                fontSize = 12.sp,
+                color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.7f),
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .background(MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.3f))
+                    .padding(8.dp)
+            )
+            Spacer(modifier = Modifier.height(8.dp))
+            
+            // Rewritten Block
+            Text(
+                text = "Proposed Optimization:",
+                fontSize = 11.sp,
+                fontWeight = FontWeight.Bold,
+                color = MaterialTheme.colorScheme.primary
+            )
+            Text(
+                text = rewrittenText,
+                fontSize = 12.sp,
+                fontWeight = FontWeight.Medium,
+                color = MaterialTheme.colorScheme.onSurface,
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .background(MaterialTheme.colorScheme.primary.copy(alpha = 0.05f))
+                    .padding(8.dp)
+            )
+            
+            if (explanation.isNotBlank()) {
+                Spacer(modifier = Modifier.height(8.dp))
+                Text(
+                    text = "Rationale: $explanation",
+                    fontSize = 11.sp,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+            }
+        }
+    }
+}
+
+@Composable
+fun ScoreProgressionChart(analyses: List<ResumeJobAnalysisEntity>) {
+    // Sort analyses by date
+    val sortedAnalyses = analyses.sortedBy { it.timestamp }
+    if (sortedAnalyses.isEmpty()) {
+        Box(
+            modifier = Modifier
+                .fillMaxWidth()
+                .height(150.dp),
+            contentAlignment = Alignment.Center
+        ) {
+            Text("No match analysis records found yet.", color = MaterialTheme.colorScheme.onSurfaceVariant)
+        }
+        return
+    }
+
+    Column(
+        modifier = Modifier
+            .fillMaxWidth()
+            .background(MaterialTheme.colorScheme.surface)
+            .padding(16.dp)
+    ) {
+        Text(
+            text = "Score Progression Timeline",
+            fontSize = 14.sp,
+            fontWeight = FontWeight.Bold,
+            color = MaterialTheme.colorScheme.onBackground
+        )
+        Spacer(modifier = Modifier.height(16.dp))
+
+        // Simple visual timeline connecting the scores
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .horizontalScroll(rememberScrollState())
+                .padding(vertical = 12.dp),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            sortedAnalyses.forEachIndexed { index, analysis ->
+                Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                    Box(
+                        contentAlignment = Alignment.Center,
+                        modifier = Modifier
+                            .size(50.dp)
+                            .clip(CircleShape)
+                            .background(MaterialTheme.colorScheme.primary.copy(alpha = 0.15f))
+                            .border(2.dp, MaterialTheme.colorScheme.primary, CircleShape)
+                    ) {
+                        Text(
+                            text = "${analysis.matchScore}",
+                            fontSize = 14.sp,
+                            fontWeight = FontWeight.ExtraBold,
+                            color = MaterialTheme.colorScheme.primary
+                        )
+                    }
+                    Spacer(modifier = Modifier.height(6.dp))
+                    Text(
+                        text = "Version ${analysis.resumeVersion}",
+                        fontSize = 11.sp,
+                        fontWeight = FontWeight.Bold,
+                        color = MaterialTheme.colorScheme.onBackground
+                    )
+                    Text(
+                        text = analysis.companyName,
+                        fontSize = 10.sp,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                    Text(
+                        text = java.text.SimpleDateFormat("MMM dd", java.util.Locale.US).format(java.util.Date(analysis.timestamp)),
+                        fontSize = 9.sp,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.7f)
+                    )
+                }
+
+                if (index < sortedAnalyses.size - 1) {
+                    // Line connector with an arrow
+                    Row(
+                        verticalAlignment = Alignment.CenterVertically,
+                        modifier = Modifier.padding(horizontal = 8.dp)
+                    ) {
+                        Box(
+                            modifier = Modifier
+                                .width(40.dp)
+                                .height(2.dp)
+                                .background(MaterialTheme.colorScheme.primary)
+                        )
+                        Icon(
+                            imageVector = Icons.Default.KeyboardArrowRight,
+                            contentDescription = null,
+                            tint = MaterialTheme.colorScheme.primary,
+                            modifier = Modifier.size(16.dp)
+                        )
+                    }
+                }
             }
         }
     }

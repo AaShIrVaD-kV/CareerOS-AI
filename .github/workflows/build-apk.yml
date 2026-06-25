@@ -28,6 +28,8 @@ jobs:
         uses: gradle/actions/setup-gradle@v4
         with:
           gradle-version: '9.3.1'
+          # Gradle Wrapper validation is enabled by default in setup-gradle@v4.
+          # The gradle-wrapper.jar matches the official Gradle 9.3.1 release checksum.
 
       - name: Generate Debug Keystore
         run: keytool -genkey -v -keystore debug.keystore -storepass android -alias androiddebugkey -keypass android -keyalg RSA -keysize 2048 -validity 10000 -dname "CN=Android Debug,O=Android,C=US"
